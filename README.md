@@ -1,4 +1,4 @@
-# Multi-Zone HVAC Control Blueprint with Dew Point Priority & Logging
+# Multi-Zone HVAC Control with Dew Point Priority & Logging
 
 ## 📌 Overview
 This **Home Assistant automation blueprint** synchronizes multiple HVAC units while prioritizing:
@@ -54,5 +54,7 @@ This **Home Assistant automation blueprint** synchronizes multiple HVAC units wh
 
 ---
 
-This README provides **everything needed to deploy & understand** the blueprint! 🚀  
-Would you like any additional documentation before finalizing?
+## **🚀 Next Steps**
+✅ **Deploy & Test This Version**  
+✅ **Ensure `climate.bedroom` operates correctly**  
+✅ **Monitor logging data for any unexpected behavior**  
