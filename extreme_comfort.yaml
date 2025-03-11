@@ -1,0 +1,168 @@
+blueprint:
+  name: Multi-Zone HVAC Control with Dew Point Priority & Logging
+  description: >
+    Synchronizes HVAC modes across multiple rooms, prioritizing comfort while
+    ensuring proper humidity control based on dew point.
+  domain: automation
+  input:
+    climate_entities:
+      name: Climate Entities
+      selector:
+        entity:
+          domain: climate
+          multiple: true
+
+    bedroom_climate:
+      name: Bedroom Climate Entity
+      description: Select the climate entity for the Bedroom.
+      selector:
+        entity:
+          domain: climate
+
+    temperature_sensors:
+      name: Temperature Sensors
+      selector:
+        entity:
+          domain: sensor
+          multiple: true
+
+    humidity_sensors:
+      name: Humidity Sensors
+      selector:
+        entity:
+          domain: sensor
+          multiple: true
+
+    occupancy_sensors:
+      name: Occupancy Sensors
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+
+    link_booleans:
+      name: Linking Toggles
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+
+    default_mode:
+      name: Default Mode (When No Heat/Cool Requests)
+      selector:
+        select:
+          options:
+            - "fan_only"
+            - "dry"
+            - "off"
+          mode: dropdown
+      default: "fan_only"
+
+    hysteresis_time:
+      name: Hysteresis Time (Minutes)
+      description: Minimum time before changing HVAC mode.
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 5
+          unit_of_measurement: "min"
+      default: 15
+
+mode: restart
+
+trigger:
+  - platform: state
+    entity_id: !input temperature_sensors
+  - platform: state
+    entity_id: !input humidity_sensors
+  - platform: state
+    entity_id: !input occupancy_sensors
+  - platform: state
+    entity_id: !input link_booleans
+
+variables:
+  user_default_mode: "{{ states('input_select.default_mode') | default('fan_only') }}"
+
+  max_room_dew_point: >
+    {% set max_dp = 0 %}
+    {% for idx in range(humidity_sensors | count) %}
+      {% set temp = states(temperature_sensors[idx]) | float(default=0) %}
+      {% set humidity = states(humidity_sensors[idx]) | float(default=0) %}
+      {% if temp > 0 and humidity > 0 %}
+        {% set dew_point = temp - ((100 - humidity) / 5) %}
+        {% if dew_point > max_dp %}
+          {% set max_dp = dew_point %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {{ max_dp }}
+
+  rooms_requesting_heat: >
+    {{ temperature_sensors | selectattr('state', '<', 20) | list | count }}
+
+  rooms_requesting_cool: >
+    {{ temperature_sensors | selectattr('state', '>', 24) | list | count }}
+
+  best_mode: >
+    {% if max_room_dew_point > 60 %}
+      "dry"
+    {% elif rooms_requesting_heat >= 2 %}
+      "heat"
+    {% elif rooms_requesting_cool >= 2 %}
+      "cool"
+    {% elif rooms_requesting_heat == 1 and rooms_requesting_cool == 0 %}
+      {% if states('sensor.hvac_last_mode') == 'cool' %}
+        "cool"
+      {% else %}
+        "heat"
+      {% endif %}
+    {% elif rooms_requesting_cool == 1 and rooms_requesting_heat == 0 %}
+      {% if states('sensor.hvac_last_mode') == 'heat' %}
+        "heat"
+      {% else %}
+        "cool"
+      {% endif %}
+    {% elif max_room_dew_point > 52 %}
+      "dry"
+    {% else %}
+      "fan_only"
+    {% endif %}
+
+action:
+  - delay:
+      minutes: !input hysteresis_time
+
+  - service: persistent_notification.create
+    data:
+      title: "HVAC Mode Decision"
+      message: >
+        Current Mode: {{ states('home/climate/mode') }}
+        New Mode: {{ best_mode }}
+        - Max Dew Point: {{ max_room_dew_point }}°F
+        - Rooms Requesting Heat: {{ rooms_requesting_heat }}
+        - Rooms Requesting Cool: {{ rooms_requesting_cool }}
+        - Default Mode: {{ user_default_mode }}
+
+  - service: mqtt.publish
+    data:
+      topic: "home/climate/mode"
+      payload: "{{ best_mode }}"
+
+  - repeat:
+      for_each: "{{ (climate_entities | default([])) + ([bedroom_climate] if bedroom_climate else []) }}"
+      sequence:
+        - if:
+            condition: template
+            value_template: "{{ best_mode != states(repeat.item) }}"
+          then:
+            - service: climate.set_hvac_mode
+              target:
+                entity_id: "{{ repeat.item }}"
+              data:
+                hvac_mode: "{{ best_mode }}"
+
+            - service: persistent_notification.create
+              data:
+                title: "HVAC Updated for {{ repeat.item }}"
+                message: "Mode changed to {{ best_mode }}"
